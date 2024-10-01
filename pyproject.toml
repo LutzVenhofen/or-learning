@@ -1,0 +1,14 @@
+[project]
+name = "or-learning"
+version = "0.1.0"
+description = "Packages to use for solving or problems"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "highspy>=1.7.2",
+    "llvmlite>=0.43.0",
+    "numpy>=2.1.1",
+    "ortools>=9.11.4210",
+    "pyscipopt>=5.1.1",
+    "rustworkx>=0.15.1",
+]
