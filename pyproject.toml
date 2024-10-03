@@ -9,6 +9,8 @@ dependencies = [
     "llvmlite>=0.43.0",
     "numpy>=2.1.1",
     "ortools>=9.11.4210",
+    "pillow>=10.4.0",
+    "pydot>=3.0.2",
     "pyscipopt>=5.1.1",
     "rustworkx>=0.15.1",
 ]
