@@ -1,3 +1,4 @@
+from pathlib import Path
 from collections import defaultdict
 from itertools import product
 from dataclasses import dataclass, field
@@ -6,6 +7,8 @@ from ortools.math_opt.python import mathopt
 import rustworkx as rwx
 from rustworkx.visualization import graphviz_draw
 import numpy as np
+import tsplib95
+from tsplib95.models import StandardProblem
 
 
 class ModelOptions(Enum):
@@ -28,10 +31,18 @@ class SubtourCutResult:
     resulting_model: TspMip
 
 
+def get_edge_weight(i: int, j: int, dist: list[list[float]] | StandardProblem) -> float:
+    match dist:
+        case StandardProblem():
+            return dist.get_weight(i + 1, j + 1)
+        case _:
+            return dist[i][j]
+
+
 def create_basic_tsp_model(
     name: str,
     num_cities: int,
-    dist: list[list[float]],
+    dist: list[list[float]] | StandardProblem,
     model_option: ModelOptions,
     subtour_cuts: list[set[int]] | None = None,
 ) -> TspMip:
@@ -61,7 +72,7 @@ def create_basic_tsp_model(
         add_subtour_cuts(tsp_mip, subtour_cuts)
     tsp_mip.model.minimize(
         mathopt.fast_sum(
-            tsp_mip.x_vars[i][j] * dist[i][j] for i in tsp_mip.x_vars for j in tsp_mip.x_vars[i]
+            tsp_mip.x_vars[i][j] * get_edge_weight(i, j, dist) for i in tsp_mip.x_vars for j in tsp_mip.x_vars[i]
         )
     )
     return tsp_mip
@@ -112,19 +123,35 @@ def create_graph_from(
 
 def extract_edges_from_model(
     tsp_mip: TspMip,
-    dist: list[list[float]],
+    dist: list[list[float]] | StandardProblem,
     eps: float = 0.5
 ) -> list[tuple[int, int, float]]:
     var_values =  tsp_mip.result.variable_values()
     return [
-        (i, j, dist[i][j]) for i in tsp_mip.x_vars for j in tsp_mip.x_vars[i]
+        (i, j, get_edge_weight(i, j, dist)) for i in tsp_mip.x_vars for j in tsp_mip.x_vars[i]
         if var_values[tsp_mip.x_vars[i][j]] > eps
     ]
 
 
+def solve_tsp_with_double_stage(n: int, dist: list[list[float]] | StandardProblem) -> tuple[TspMip, list[float], list[float]]:
+    # first run the model as lp, collect subtour elimination constraints fast
+    eps = 1.e-6
+    tsp_lp = create_basic_tsp_model("Relaxed TSP", n, dist, ModelOptions.RELAXED)
+    tsp_lp, lp_iterations = solve_with_iterative_subtour_cuts(tsp_lp, dist, n, eps)
+
+    # when no more lp subtours found rebuild and rerun as integer model
+    eps = 0.8
+    tsp_mip = create_basic_tsp_model(
+        "Integer TSP", n, dist, ModelOptions.INTEGER, subtour_cuts=tsp_lp.subtour_cuts
+    )
+    tsp_mip, mip_iterations = solve_with_iterative_subtour_cuts(tsp_mip, dist, n, eps)
+    return tsp_mip, lp_iterations, mip_iterations
+
+
+
 def solve_with_iterative_subtour_cuts(
     tsp_mip: TspMip,
-    dist: list[list[float]],
+    dist: list[list[float]] | StandardProblem,
     n: int,
     eps=float,
 ) -> tuple[TspMip, list[float]]:
@@ -143,7 +170,7 @@ def solve_with_iterative_subtour_cuts(
     return scr.resulting_model, iterations
 
 
-def create_random_tsp(n: int):
+def create_random_tsp(n: int) -> np.ndarray:
     np.random.seed(0)
 
     X = 100 * np.random.rand(n)
@@ -155,22 +182,10 @@ def create_random_tsp(n: int):
     return dist
 
 
-def main():
+def run_random_tsp_solution():
     n = 20
     dist = create_random_tsp(n)
-
-    # first run the model as lp, collect subtour elimination constraints fast
-    eps = 1.e-6
-    tsp_lp = create_basic_tsp_model("Relaxed TSP", n, dist, ModelOptions.RELAXED)
-    tsp_lp, lp_iterations = solve_with_iterative_subtour_cuts(tsp_lp, dist, n, eps)
-
-    # when no more lp subtours found rebuild and rerun as integer model
-    eps = 0.8
-    tsp_mip = create_basic_tsp_model(
-        "Integer TSP", n, dist, ModelOptions.INTEGER, subtour_cuts=tsp_lp.subtour_cuts
-    )
-    tsp_mip, mip_iterations = solve_with_iterative_subtour_cuts(tsp_mip, dist, n, eps)
-
+    tsp_mip, lp_iterations, mip_iterations = solve_tsp_with_double_stage(n, dist)
     # visualize and report results
     final_edges = extract_edges_from_model(tsp_mip, dist)
     final_graph = create_graph_from(final_edges, n)
@@ -180,6 +195,31 @@ def main():
     print(f"Number MIP iterations {len(mip_iterations)}")
     print(f"MIP obj values {mip_iterations}")
     print("Finished")
+
+
+def run_tsp_lib_solution(main_path: Path):
+    instance_name = "a280"
+    problem = tsplib95.load(main_path / "local" / "ALL_tsp"/ f"{instance_name}.tsp")
+    tsp_mip, lp_iterations, mip_iterations = solve_tsp_with_double_stage(problem.dimension, problem)
+    final_edges = extract_edges_from_model(tsp_mip, problem)
+    final_graph = create_graph_from(final_edges, problem.dimension)
+    opt = tsplib95.load(main_path / "local" / "ALL_tsp"/ f"{instance_name}.opt.tour")
+    opt_tour = opt.tours[0]
+    dist = 0
+    for i in range(problem.dimension - 1):
+        dist += problem.get_weight(opt_tour[i], opt_tour[i + 1])
+    dist += problem.get_weight(opt_tour[-1], opt_tour[0])
+    print(f"Number lp iterations {len(lp_iterations)}")
+    print(f"LP obj values {lp_iterations}")
+    print(f"Number MIP iterations {len(mip_iterations)}")
+    print(f"MIP obj values {mip_iterations}")
+    print(f"Objective val from lit {dist}")
+    print("Finished")
+
+
+def main():
+    main_path = Path(__file__).resolve().parents[1]
+    run_tsp_lib_solution(main_path)
     
 
 

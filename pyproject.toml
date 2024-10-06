@@ -13,4 +13,5 @@ dependencies = [
     "pydot>=3.0.2",
     "pyscipopt>=5.1.1",
     "rustworkx>=0.15.1",
+    "tsplib95>=0.7.1",
 ]
